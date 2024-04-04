@@ -39,8 +39,15 @@ def main():
     else:
         parties_df = pd.DataFrame(columns=PARTIES_COLS)
 
-    for i, (url, mode, split_cls) in urls.iterrows():
-        parties_df = pd.concat([parties_df, get_parties(url, mode, split_cls)])
+    for i, (url, mode, split_cls, club_name, genre) in urls.iterrows():
+        df = get_parties(
+            url,
+            mode,
+            split_cls,
+            dft_club_name=club_name,
+            dft_genre=genre,
+        )
+        parties_df = pd.concat([parties_df, df])
 
         if i % 5 == 0 and i != 0:
             parties_df.to_csv(temp_path, index=False)
@@ -52,46 +59,64 @@ def main():
         write_parties_per_week(parties_df)
 
 
-def get_parties(url: str, mode="default", split_cls_name=None):
+def get_parties(
+    url: str, mode="default", split_cls_name=None, dft_club_name=None, dft_genre=None
+):
     # Fetch and parse the HTML content from the URL of the events page
     html = get_html(url)
 
-    if mode == "default" or mode == "detail":
-        links_df = ext_links(html, return_pd=True)
-        parsed_url = urlparse(url)
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        links_df = clean_links(
-            links_df, base_url=base_url, contains_list=["party", "event"]
-        )
+    if mode == "default" or mode == "detail" or mode == "links":
+        links = get_links_from_overview(html, url)
 
-        if len(links_df) == 0:
+        if len(links) == 0:
             logger.warn(f"No links found to extract information from on {url}.")
         else:
-            logger.info(f"Found {len(links_df)} links to extract information from.")
+            logger.info(f"Found {len(links)} links to extract information from.")
 
-        return get_parties_from_detail_pages(links_df["links"])
-
+        return get_parties_from_detail_pages(links)
     elif mode == "overview":
-        return get_parties_from_overview(html, split_cls_name=split_cls_name)
-
+        return get_parties_from_overview(
+            html,
+            split_cls_name=split_cls_name,
+            dft_club_name=dft_club_name,
+            dft_genre=dft_genre,
+        )
     else:
         raise ValueError(f"Invalid mode: {mode}")
 
 
-def get_parties_from_overview(html, split_cls_name=None):
+def get_links_from_overview(html, url):
+    links_df = ext_links(html, return_pd=True)
+    parsed_url = urlparse(url)
+    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    links_df = clean_links(
+        links_df, base_url=base_url, contains_list=["party", "event"]
+    )
+
+    return links_df["links"]
+
+
+def get_parties_from_overview(
+    html, split_cls_name=None, dft_club_name=None, dft_genre=None
+):
     assert split_cls_name is not None, "split_class_name must be provided."
 
     parties = []
     soup = BeautifulSoup(html, "html.parser")
     soup = soup.find_all(class_=split_cls_name)
-
     for i, s in enumerate(soup):
-        txt = parse_html_2_txt(s)
-        logger.info(f"Split {i}: {txt}")
+        txt = s.get_text(strip=True)
 
         try:
             ctx = extr_info_with_llm(txt)
             ctx = ctx.split(";")
+
+            if dft_club_name:
+                ctx[2] = dft_club_name
+
+            if dft_genre and ctx[1] == "None" or ctx[1] == "Mixed":
+                ctx[1] = dft_genre
+
             if len(ctx) != 4:
                 logger.warning(
                     f"Something went wrong with the extraction of the information for split {i}."
@@ -144,12 +169,19 @@ def extr_info_with_llm(txt: str):
         Die beste 90s Hits;Techno;Batschkapp;2022-10-19 20:00:00;
     """
     # Here, you formulate a prompt for the LLM to instruct it on what information to extract.
-    prompt = f"""Extract the title, genre, club name, datetime from this description in german: "{txt}". Choose a genre out of the text between Techno, Electronic, Rock, Metal, Hip-Hop, 80s, 90s, Pop and Mixed! The genres are very general so as they is for example PopPunk you can classify it as Pop and so on. As in the text are mentioned more than one genre that cannot be classified to one, like in the text is Electronic and Hip-Hop, so you gonna write Mixed. Also don't write the city name in the title or the club name. Moreover if the title is a sentence or a persons name write it case sensitivity. Try to rewrite the title as much as possible in case sensitive. Don't rewrite the content but you can short it somehow so that the title is no longer then 25 chars and format the output as: 
+    prompt = f"""Extract the title, genre, club name, datetime from this description in german: "{txt}". Choose a genre out of the text between Techno, Electronic, Rock, Metal, Hip-Hop, 80s, 90s, Pop and Mixed! The genres are very general so as they is for example PopPunk you can classify it as Pop and so on. As in the text are mentioned more than one genre that cannot be classified to one, like in the text is Electronic and Hip-Hop, so you gonna write Mixed. Also don't write the city name in the title or the club name. Moreover if the title is a sentence or a persons name write it case sensitivity. Try to rewrite the title as much as possible in case sensitive. You need to classify the provided information, if it is actually a party or not. For example there can be Situations where the event is stand up comedy or a 'flohmarkt' and so on, if it is the case whole answer blank!  Don't rewrite the content but you can short it somehow so that the title is no longer then 25 chars and format the output as: 
 
     "{{Title}};{{Genre}};{{Clubname}};{{Date in YYYY-MM-DD HH:MM:SS}}"
     
     Example:
     Die beste 90s Hits;Techno;Batschkapp;2022-10-19 20:00:00
+
+    Example for a blank answer where the party is flohmarkt:
+    ;;;
+    
+    Example for a blank answer where the party is stand up comedy:
+    ;;;
+    
     """
 
     # Call the OpenAI API to get the answer to your question
@@ -232,7 +264,11 @@ def is_absolute(url):
 
 
 def write_parties_per_week(parties_df: pd.DataFrame):
-    parties_df["time"] = pd.to_datetime(parties_df["time"], format="mixed")
+    parties_df["time"] = pd.to_datetime(
+        parties_df["time"],
+        errors="coerce",
+        format="mixed",
+    )
     parties_df = parties_df.sort_values(by="time")
     parties_df["week"] = parties_df["time"].dt.isocalendar().week
     weeks = parties_df["week"].unique()
