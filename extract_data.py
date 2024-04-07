@@ -13,10 +13,11 @@ import re
 locale.setlocale(locale.LC_TIME, "de_DE")
 
 dotenv.load_dotenv()
+IMPORTANT_GENRES = ["Hip-Hop", "Rock", "Techno", "Metal"]
 GPT_MODEL = os.environ["GPT_MODEL"]
 GPT_API_KEY = os.environ["GPT_API_KEY"]
 GPT_MAX_TOKENS = int(os.environ["GPT_MAX_TOKENS"])
-CITY = "frankfurt"
+CITY = "munchen"
 DATA_DIR = f"./data/{CITY}/"
 PARTIES_COLS = ["title", "genre", "club_name", "time"]
 URLS_COLS = ["url"]
@@ -165,17 +166,17 @@ def get_parties_from_overview(
             ctx = extr_info_with_llm(txt)
             ctx = ctx.split(";")
 
-            if not pd.isnull(dft_club_name):
-                ctx[2] = dft_club_name
-
-            if not pd.isnull(dft_genre) and ctx[1] == "None" or ctx[1] == "Mixed":
-                ctx[1] = dft_genre
-
             if len(ctx) != 4:
                 logger.warning(
                     f"Something went wrong with the extraction of the information for split {i}."
                 )
                 continue
+
+            if not pd.isnull(dft_club_name):
+                ctx[2] = dft_club_name
+
+            if not pd.isnull(dft_genre) and ctx[1] == "None" or ctx[1] == "Mixed":
+                ctx[1] = dft_genre
 
             parties.append(ctx)
         except Exception as e:
@@ -185,7 +186,7 @@ def get_parties_from_overview(
     return pd.DataFrame(parties, columns=PARTIES_COLS)
 
 
-def get_parties_from_detail_pages(links):
+def get_parties_from_detail_pages(links, dft_club_name=None, dft_genre=None):
     parties = []
 
     for link in links:
@@ -201,6 +202,12 @@ def get_parties_from_detail_pages(links):
                     f"Something went wrong with the extraction of the information for the link: {link}"
                 )
                 continue
+
+            if not pd.isnull(dft_club_name):
+                ctx[2] = dft_club_name
+
+            if not pd.isnull(dft_genre) and ctx[1] == "None" or ctx[1] == "Mixed":
+                ctx[1] = dft_genre
 
             parties.append(ctx)
         except Exception as e:
@@ -280,9 +287,12 @@ def get_links(html, link_cls=None) -> list:
     if pd.isnull(link_cls):
         a_tags = soup.find_all("a")
     else:
-        elements = soup.find_all(class_=link_cls)
-        for el in elements:
-            a_tags.extend(el.find_all("a"))
+        a_tags = soup.find_all("a", class_=link_cls)
+
+        if len(a_tags) == 0:
+            elements = soup.find_all(class_=link_cls)
+            for e in elements:
+                a_tags.extend(e.find_all("a"))
 
     for a in a_tags:
         link = a.get("href")
@@ -332,6 +342,22 @@ def is_absolute(url):
     return bool(urlparse(url).netloc)
 
 
+def drop_out_parties(parties_df: pd.DataFrame, limit=40):
+    filtered_df = parties_df[parties_df["genre"].isin(IMPORTANT_GENRES)]
+
+    if len(filtered_df) < limit:
+        other_df = parties_df[~parties_df["genre"].isin(IMPORTANT_GENRES)]
+        if len(other_df) > 0:
+            random_parties = other_df.sample(
+                n=min(limit - len(filtered_df), len(other_df)), replace=True
+            )
+            filtered_df = pd.concat([filtered_df, random_parties])
+    elif len(filtered_df) > limit:
+        filtered_df = filtered_df.sample(n=limit, replace=False)
+
+    return filtered_df
+
+
 def write_parties_per_week(parties_df: pd.DataFrame):
     parties_per_week_dir = os.path.join(DATA_DIR, "parties_per_week")
     os.makedirs(parties_per_week_dir, exist_ok=True)
@@ -350,6 +376,7 @@ def write_parties_per_week(parties_df: pd.DataFrame):
 
     for week in weeks:
         week_df = parties_df[parties_df["week"] == week]
+        week_df = drop_out_parties(week_df)
         week_df = week_df.drop(columns=["week"])
         week_df = week_df.sort_values(by="time")
         week_txt = ""
