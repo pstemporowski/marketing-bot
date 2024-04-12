@@ -17,7 +17,7 @@ IMPORTANT_GENRES = ["Hip-Hop", "Rock", "Techno", "Metal"]
 GPT_MODEL = os.environ["GPT_MODEL"]
 GPT_API_KEY = os.environ["GPT_API_KEY"]
 GPT_MAX_TOKENS = int(os.environ["GPT_MAX_TOKENS"])
-CITY = "munchen"
+CITY = "berlin"
 DATA_DIR = f"./data/{CITY}/"
 PARTIES_COLS = ["title", "genre", "club_name", "time"]
 URLS_COLS = ["url"]
@@ -154,7 +154,7 @@ def get_parties_from_overview(
     soup = soup.find_all(class_=split_cls_name)
     for i, s in enumerate(soup):
 
-        if filter_regex and filter_regex != "None":
+        if not pd.isnull(filter_regex):
             pattern = re.compile(filter_regex)
             if not pattern.search(str(s)):
                 logger.info(f"Skipping split because it does not match the filter.")
@@ -321,7 +321,7 @@ def post_process_links(links_df, base_url=None, contains_list=None, rm_duplicate
     if base_url:
         # Make all links absolute
         links_df["links"] = links_df["links"].apply(
-            lambda link: base_url + link if not is_absolute(link) else link
+            lambda link: base_url + "/" + link if not is_absolute(link) else link
         )
 
         # Remove all links that are not base_url
