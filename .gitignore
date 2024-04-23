@@ -1,2 +1,8 @@
 /.env
 /.vscode
+/.idea
+*.txt
+*.log
+*.csv
+.DS_Store
+*__pycache__/
